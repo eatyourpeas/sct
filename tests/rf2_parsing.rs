@@ -53,6 +53,17 @@ fn parse_concepts_inactive_row() {
     assert!(!rows[0].active);
 }
 
+#[test]
+fn parse_concepts_active_row_with_nul_padding() {
+    let f = tsv_file(
+        "id\teffectiveTime\tactive\tmoduleId\tdefinitionStatusId\n\
+         138875005\t20020131\t\0 1\0\t900000000000207008\t900000000000074008\n",
+    );
+    let rows = parse_concepts(f.path()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].active);
+}
+
 // --- Description parsing ---
 
 #[test]
@@ -175,6 +186,47 @@ fn dataset_load_minimal() {
     assert!(ds.ctv3_maps.is_empty());
     assert!(ds.read2_maps.is_empty());
     assert!(ds.refset_members.is_empty());
+}
+
+// --- quoting(false) regression ---
+//
+// RF2 description terms can contain double-quote characters (e.g. `6" nail`).
+// When the csv crate's quoting flag is left at its default (`true`), a term
+// that *starts* with `"` puts the parser into multi-field quoted mode: it
+// consumes everything — including tab separators and subsequent rows — until
+// it finds a closing `"`.  This collapses multiple records into one malformed
+// row, shifting field indices so that concept IDs and active flags are read
+// from the wrong columns.
+//
+// The fix: `quoting(false)` in `tsv_reader` (src/rf2.rs).
+// To verify the regression: change `.quoting(false)` to `.quoting(true)` in
+// `tsv_reader`, then run this test — it will fail (either a csv parse error
+// from the unmatched `"`, or an assertion failure from misaligned fields).
+
+#[test]
+fn parse_descriptions_with_quoted_term_does_not_misalign_fields() {
+    // Row d1 has a term starting with `"` but no matching closing `"` before
+    // the field separator — the exact pattern that triggers field-merging in
+    // csv with quoting=true: the parser enters quoted mode and swallows
+    // subsequent tabs (and d2's content) into d1's term field.
+    let f = tsv_file(
+        "id\teffectiveTime\tactive\tmoduleId\tconceptId\tlanguageCode\ttypeId\tterm\tcaseSignificanceId\n\
+         d1\t20020131\t1\t900000000000207008\t138875005\ten\t900000000000013009\t\"6 inch nail\t900000000000020002\n\
+         d2\t20020131\t1\t900000000000207008\t404684003\ten\t900000000000003001\tClinical finding (finding)\t900000000000020002\n",
+    );
+    let rows = parse_descriptions(f.path()).unwrap();
+
+    // With quoting(false) both rows are returned with correct field values.
+    // With quoting(true) the parser merges d1's term through d2's fields,
+    // producing a single malformed record (rows.len() == 1) and reading
+    // "Clinical finding (finding)" as part of d1's term rather than as d2.
+    assert_eq!(rows.len(), 2, "quoting(true) would merge rows into one");
+
+    assert_eq!(rows[0].concept_id, "138875005");
+    assert!(rows[0].active);
+
+    assert_eq!(rows[1].concept_id, "404684003");
+    assert!(rows[1].active);
 }
 
 // --- Simple refset parsing ---
